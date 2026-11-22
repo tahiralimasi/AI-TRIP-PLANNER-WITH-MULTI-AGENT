@@ -32,10 +32,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL is missing from .env")
+    raise ValueError("DATABASE_URL environment variable is missing.")
 
 if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY is missing from .env")
+    raise ValueError("GROQ_API_KEY environment variable is missing.")
 
 
 # ==========================================
@@ -43,7 +43,7 @@ if not GROQ_API_KEY:
 # ==========================================
 
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
+    model="openai/gpt-oss-120b",
     api_key=GROQ_API_KEY,
     temperature=0.3
 )
@@ -70,12 +70,15 @@ def flight_agent(state: TravelState):
 
     query = state["user_query"]
 
-    flight_data = search_flights(query)
+    try:
+        flight_data = search_flights(query)
+    except Exception as e:
+        flight_data = f"Flight search failed: {str(e)}"
 
     return {
         "flight_results": str(flight_data),
         "messages": [
-            AIMessage(content="Flight results fetched successfully.")
+            AIMessage(content="Flight search completed.")
         ],
         "llm_calls": state.get("llm_calls", 0) + 1
     }
@@ -89,12 +92,15 @@ def hotel_agent(state: TravelState):
 
     query = f"Best hotels for {state['user_query']}"
 
-    hotel_results = tavily_search(query)
+    try:
+        hotel_results = tavily_search(query)
+    except Exception as e:
+        hotel_results = f"Hotel search failed: {str(e)}"
 
     return {
         "hotel_results": str(hotel_results),
         "messages": [
-            AIMessage(content="Hotel information fetched successfully.")
+            AIMessage(content="Hotel search completed.")
         ],
         "llm_calls": state.get("llm_calls", 0) + 1
     }
@@ -107,33 +113,37 @@ def hotel_agent(state: TravelState):
 def itinerary_agent(state: TravelState):
 
     prompt = f"""
-    Create a detailed travel itinerary.
+Create a detailed travel itinerary.
 
-    User Query:
-    {state['user_query']}
+User Query:
+{state['user_query']}
 
-    Flight Results:
-    {state['flight_results']}
+Flight Results:
+{state['flight_results']}
 
-    Hotel Results:
-    {state['hotel_results']}
+Hotel Results:
+{state['hotel_results']}
 
-    Include:
-    - Travel schedule
-    - Hotel recommendations
-    - Daily activities
-    - Estimated travel expenses
-    """
+Include:
+- Travel schedule
+- Hotel recommendations
+- Daily activities
+- Estimated travel expenses
+
+Clearly mention when flight or hotel information is unavailable.
+Do not invent confirmed flight bookings or hotel availability.
+"""
 
     response = llm.invoke([
         SystemMessage(
-            content="You are an expert travel planner."
+            content="You are an expert travel planner. "
+                    "Create practical and well-organized travel plans."
         ),
         HumanMessage(content=prompt)
     ])
 
     return {
-        "itinerary": response.content,
+        "itinerary": str(response.content),
         "messages": [response],
         "llm_calls": state.get("llm_calls", 0) + 1
     }
@@ -146,26 +156,31 @@ def itinerary_agent(state: TravelState):
 def final_agent(state: TravelState):
 
     final_prompt = f"""
-    Generate a final travel planning response.
+Generate the final travel planning response.
 
-    User Request:
-    {state['user_query']}
+User Request:
+{state['user_query']}
 
-    Flights:
-    {state['flight_results']}
+Flights:
+{state['flight_results']}
 
-    Hotels:
-    {state['hotel_results']}
+Hotels:
+{state['hotel_results']}
 
-    Itinerary:
-    {state['itinerary']}
+Itinerary:
+{state['itinerary']}
 
-    Present the result in a clear and structured format.
-    """
+Present the result in a clear and structured format.
+
+Use headings and bullet points.
+Mention estimated costs clearly.
+Do not claim that bookings have been made.
+"""
 
     response = llm.invoke([
         SystemMessage(
-            content="You are a professional travel booking assistant."
+            content="You are a professional travel planning assistant. "
+                    "Give clear, helpful and organized responses."
         ),
         HumanMessage(content=final_prompt)
     ])
@@ -198,16 +213,17 @@ graph.add_edge("final_agent", END)
 # 9. SUPABASE POSTGRESQL CONNECTION
 # ==========================================
 
-# Persistent connection for LangGraph checkpointing.
-# Supabase Session Pooler is recommended here.
+# Use Supabase Session Pooler connection URL.
+# Keep the connection open for LangGraph checkpointing.
 
 _conn = psycopg.connect(
     DATABASE_URL,
     autocommit=True,
-    prepare_threshold=0
+    prepare_threshold=0,
+    connect_timeout=15
 )
 
-# Create LangGraph checkpoint tables if they don't exist.
+# Create checkpoint tables if they do not exist.
 checkpointer = PostgresSaver(_conn)
 checkpointer.setup()
 
@@ -229,7 +245,7 @@ if __name__ == "__main__":
         }
     }
 
-    user_input = input("Enter travel request: ")
+    user_input = input("Enter your travel request: ")
 
     result = app.invoke(
         {
@@ -249,4 +265,4 @@ if __name__ == "__main__":
 
     print(result["messages"][-1].content)
 
-    print("\nTotal LLM calls:", result["llm_calls"])
+    print("\nTotal agent steps:", result["llm_calls"])
