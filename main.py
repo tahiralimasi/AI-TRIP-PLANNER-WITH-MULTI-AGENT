@@ -1,20 +1,14 @@
-'''
-# pip install langgraph langchain langchain-openai langchain-groq langchain-community langchain-tavily psycopg[binary] psycopg_pool python-dotenv tavily-python pip install requests streamlit
-
-# install PostgresSql and create database
-CREATE DATABASE langgraph_memory;  ( or open pgadmin4 and create database there )
-'''
-# LangGraph Multi-Agent Travel Booking System with Long-Term Memory
-
-# main.py
 
 import os
-from typing import TypedDict, Annotated
 import operator
+from typing import TypedDict, Annotated
 
 import psycopg
+from dotenv import load_dotenv
+
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.postgres import PostgresSaver
+
 from langchain_core.messages import (
     AnyMessage,
     HumanMessage,
@@ -26,17 +20,39 @@ from langchain_groq import ChatGroq
 
 from tools.tavily_tool import tavily_search
 from tools.flight_tool import search_flights
-from dotenv import load_dotenv
+
+
+# ==========================================
+# 1. ENVIRONMENT CONFIGURATION
+# ==========================================
+
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# LLM
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL is missing from .env")
+
+if not GROQ_API_KEY:
+    raise ValueError("GROQ_API_KEY is missing from .env")
+
+
+# ==========================================
+# 2. LLM CONFIGURATION
+# ==========================================
+
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile"
+    model="llama-3.3-70b-versatile",
+    api_key=GROQ_API_KEY,
+    temperature=0.3
 )
 
-# State
+
+# ==========================================
+# 3. TRAVEL STATE
+# ==========================================
+
 class TravelState(TypedDict):
     messages: Annotated[list[AnyMessage], operator.add]
     user_query: str
@@ -45,36 +61,54 @@ class TravelState(TypedDict):
     itinerary: str
     llm_calls: int
 
-# Flight Agent
+
+# ==========================================
+# 4. FLIGHT AGENT
+# ==========================================
+
 def flight_agent(state: TravelState):
+
     query = state["user_query"]
+
     flight_data = search_flights(query)
+
     return {
-        "flight_results": flight_data,
+        "flight_results": str(flight_data),
         "messages": [
-            AIMessage(content=f"Flight results fetched")
+            AIMessage(content="Flight results fetched successfully.")
         ],
         "llm_calls": state.get("llm_calls", 0) + 1
     }
 
-# Hotel Agent
+
+# ==========================================
+# 5. HOTEL AGENT
+# ==========================================
+
 def hotel_agent(state: TravelState):
+
     query = f"Best hotels for {state['user_query']}"
+
     hotel_results = tavily_search(query)
 
     return {
-        "hotel_results": hotel_results,
+        "hotel_results": str(hotel_results),
         "messages": [
-            AIMessage(content="Hotel information fetched")
+            AIMessage(content="Hotel information fetched successfully.")
         ],
         "llm_calls": state.get("llm_calls", 0) + 1
     }
 
-# Itinerary Agent
+
+# ==========================================
+# 6. ITINERARY AGENT
+# ==========================================
+
 def itinerary_agent(state: TravelState):
 
     prompt = f"""
-    Create a travel itinerary.
+    Create a detailed travel itinerary.
+
     User Query:
     {state['user_query']}
 
@@ -83,11 +117,17 @@ def itinerary_agent(state: TravelState):
 
     Hotel Results:
     {state['hotel_results']}
+
+    Include:
+    - Travel schedule
+    - Hotel recommendations
+    - Daily activities
+    - Estimated travel expenses
     """
 
     response = llm.invoke([
         SystemMessage(
-            content="You are an expert travel planner"
+            content="You are an expert travel planner."
         ),
         HumanMessage(content=prompt)
     ])
@@ -98,11 +138,18 @@ def itinerary_agent(state: TravelState):
         "llm_calls": state.get("llm_calls", 0) + 1
     }
 
-# Final Response Agent
+
+# ==========================================
+# 7. FINAL RESPONSE AGENT
+# ==========================================
+
 def final_agent(state: TravelState):
 
     final_prompt = f"""
-    Generate final travel response.
+    Generate a final travel planning response.
+
+    User Request:
+    {state['user_query']}
 
     Flights:
     {state['flight_results']}
@@ -112,9 +159,14 @@ def final_agent(state: TravelState):
 
     Itinerary:
     {state['itinerary']}
+
+    Present the result in a clear and structured format.
     """
 
     response = llm.invoke([
+        SystemMessage(
+            content="You are a professional travel booking assistant."
+        ),
         HumanMessage(content=final_prompt)
     ])
 
@@ -123,6 +175,10 @@ def final_agent(state: TravelState):
         "llm_calls": state.get("llm_calls", 0) + 1
     }
 
+
+# ==========================================
+# 8. BUILD LANGGRAPH WORKFLOW
+# ==========================================
 
 graph = StateGraph(TravelState)
 
@@ -138,15 +194,35 @@ graph.add_edge("itinerary_agent", "final_agent")
 graph.add_edge("final_agent", END)
 
 
-# Persistent connection so both CLI and Streamlit can share the compiled app
-_conn = psycopg.connect(DATABASE_URL)
+# ==========================================
+# 9. SUPABASE POSTGRESQL CONNECTION
+# ==========================================
+
+# Persistent connection for LangGraph checkpointing.
+# Supabase Session Pooler is recommended here.
+
+_conn = psycopg.connect(
+    DATABASE_URL,
+    autocommit=True,
+    prepare_threshold=0
+)
+
+# Create LangGraph checkpoint tables if they don't exist.
 checkpointer = PostgresSaver(_conn)
 checkpointer.setup()
 
-app = graph.compile(checkpointer=checkpointer)
+# Compile graph with persistent memory.
+app = graph.compile(
+    checkpointer=checkpointer
+)
 
+
+# ==========================================
+# 10. CLI EXECUTION
+# ==========================================
 
 if __name__ == "__main__":
+
     config = {
         "configurable": {
             "thread_id": "user_aarohi"
@@ -171,5 +247,6 @@ if __name__ == "__main__":
 
     print("\nFINAL RESPONSE:\n")
 
-    for msg in result["messages"]:
-        print(msg.content)
+    print(result["messages"][-1].content)
+
+    print("\nTotal LLM calls:", result["llm_calls"])

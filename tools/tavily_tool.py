@@ -1,49 +1,41 @@
-from tavily import TavilyClient
+
 import os
 from dotenv import load_dotenv
+from tavily import TavilyClient
 
 load_dotenv()
 
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
-# https://www.tavily.com/ 
-# Signup and login, On dashboard- > under api keys you will see the default key.
-# Use that or click on + to create new one. Then save it in .env file
+if not TAVILY_API_KEY:
+    raise ValueError("TAVILY_API_KEY is missing")
 
-client = TavilyClient(
-    api_key=os.getenv("TAVILY_API_KEY")
-)
-
-# test it
-#################################
-# response = client.search(
-    # query="Best hotels in Dubai"
-# )
-
-# print(response)
-
-####################################
-
+client = TavilyClient(api_key=TAVILY_API_KEY)
 
 
 def tavily_search(query):
-    response = client.search(
-        query=query,
-        max_results=5
-    )
+    try:
+        response = client.search(
+            query=query,
+            max_results=5
+        )
 
-    results = []
+        results = []
 
-    for i, r in enumerate(response["results"], 1):
-        title   = r.get("title", "Unknown")
-        url     = r.get("url", "")
-        snippet = r.get("content", "").strip()
-        # Keep only the first 300 characters to avoid wall-of-text
-        if len(snippet) > 300:
-            snippet = snippet[:300].rsplit(" ", 1)[0] + "..."
+        for i, r in enumerate(response.get("results", []), 1):
+            title = r.get("title", "Unknown")
+            url = r.get("url", "")
+            snippet = r.get("content", "").strip()
 
-        results.append(f"{i}. **{title}**\n   {url}\n   {snippet}")
+            if len(snippet) > 300:
+                snippet = snippet[:300].rsplit(" ", 1)[0] + "..."
 
-    return "\n\n".join(results)
-    
-    
-    
+            results.append(
+                f"{i}. {title}\n{url}\n{snippet}"
+            )
+
+        return "\n\n".join(results) if results else "No hotel results found."
+
+    except Exception as e:
+        print(f"Tavily search error: {e}")
+        return f"Hotel search failed: {str(e)}"

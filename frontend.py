@@ -8,7 +8,7 @@ st.set_page_config(
     page_title="AI Travel Booking System",
     page_icon="✈️",
     layout="wide"
-)
+) 
 
 st.markdown("""
 <style>
